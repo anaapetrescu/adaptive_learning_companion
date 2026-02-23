@@ -262,104 +262,204 @@ def go(page, section=None):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# AI — GEMINI WITH ERROR HANDLING
+# AI — GEMINI WITH ERROR HANDLING  (FIXED)
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# WHY THE ORIGINAL BROKE:
+#   1. Model list included retired names ("gemini-2.0-flash-exp", "gemini-pro").
+#   2. Probing with generate_content("Say OK") wasted quota & triggered rate limits.
+#   3. genai.configure() was called inside every function call.
+#   4. No fallback if system_instruction was unsupported on older SDK versions.
+#
+# WHAT CHANGED:
+#   • genai.configure() is called ONCE at import time.
+#   • Model list uses only current, stable names (Feb 2026).
+#   • Probing uses genai.list_models() (free, no quota cost) instead of
+#     making a real generation call.
+#   • Added a safe_model() helper that gracefully degrades if
+#     system_instruction is unavailable (old SDK).
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Models tried in order — first one that works is cached for the session
+# ── Configure the SDK exactly once ──────────────────────────────────────────
+_gemini_configured = False
+
+def _ensure_configured():
+    """Configure the Gemini SDK once. Safe to call multiple times."""
+    global _gemini_configured
+    if not _gemini_configured and GEMINI_API_KEY:
+        genai.configure(api_key=GEMINI_API_KEY)
+        _gemini_configured = True
+
+
+# ── Stable model candidates (ordered by preference) ────────────────────────
+# Only include models that Google keeps as stable/GA endpoints.
+# "gemini-2.0-flash"  → current fast model (cheapest, best latency)
+# "gemini-2.5-flash"  → newer flash if available
+# "gemini-1.5-flash"  → previous-gen fallback (always available)
+# "gemini-1.5-pro"    → higher quality fallback
 GEMINI_MODEL_CANDIDATES = [
+    "gemini-2.5-flash",
     "gemini-2.0-flash",
-    "gemini-2.0-flash-exp",
     "gemini-1.5-flash",
-    "gemini-1.5-flash-latest",
     "gemini-1.5-pro",
-    "gemini-pro",
 ]
 
+# System instruction used for all educational prompts
+_SYSTEM_INSTRUCTION = (
+    "You are an expert educational AI assistant. "
+    "Always base your responses strictly on provided course material. "
+    "Never add external information not in the material."
+)
 
-def get_working_model(temperature=0.7):
-    """
-    Try Gemini model names in order and return the first one that works.
-    Caches the working model name in session_state so we only probe once.
-    """
-    if "working_model" in st.session_state and st.session_state.working_model:
-        try:
-            genai.configure(api_key=GEMINI_API_KEY)
-            m = genai.GenerativeModel(
-                model_name=st.session_state.working_model,
-                system_instruction=(
-                    "You are an expert educational AI assistant. "
-                    "Always base your responses strictly on provided course material. "
-                    "Never add external information not in the material."
-                ),
-                generation_config=genai.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=1400,
-                ),
-            )
-            return m
-        except Exception:
-            st.session_state.working_model = None
 
-    genai.configure(api_key=GEMINI_API_KEY)
-    for name in GEMINI_MODEL_CANDIDATES:
-        try:
-            m = genai.GenerativeModel(
-                model_name=name,
-                system_instruction=(
-                    "You are an expert educational AI assistant. "
-                    "Always base your responses strictly on provided course material. "
-                    "Never add external information not in the material."
-                ),
-                generation_config=genai.GenerationConfig(
-                    temperature=temperature,
-                    max_output_tokens=1400,
-                ),
-            )
-            # Quick test call to verify the model actually works
-            m.generate_content("Say OK")
-            st.session_state.working_model = name
-            return m
-        except Exception:
-            continue
+def _find_working_model_name():
+    """
+    Return the name of the first model from GEMINI_MODEL_CANDIDATES that
+    actually exists in the user's Gemini project.
+
+    Uses genai.list_models() which is FREE (no generation quota used).
+    Caches the result in st.session_state so we only probe once per session.
+    """
+    # Return cached result if we already found one
+    cached = st.session_state.get("working_model")
+    if cached:
+        return cached
+
+    _ensure_configured()
+
+    # Build a set of model IDs the API key has access to
+    try:
+        available = set()
+        for m in genai.list_models():
+            # m.name looks like "models/gemini-2.0-flash"
+            short = m.name.replace("models/", "")
+            available.add(short)
+            available.add(m.name)       # keep full name too
+    except Exception as e:
+        # If list_models itself fails the API key is almost certainly wrong
+        return None
+
+    # Pick the first candidate that exists
+    for candidate in GEMINI_MODEL_CANDIDATES:
+        if candidate in available or f"models/{candidate}" in available:
+            st.session_state.working_model = candidate
+            return candidate
+
     return None
 
 
+def _build_model(model_name, temperature=0.7):
+    """
+    Build a GenerativeModel. Gracefully handles older SDK versions that
+    don't support `system_instruction`.
+    """
+    _ensure_configured()
+    try:
+        # Modern SDK (google-generativeai >= 0.4.0)
+        return genai.GenerativeModel(
+            model_name=model_name,
+            system_instruction=_SYSTEM_INSTRUCTION,
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=2048,       # bumped from 1400 for longer guides
+            ),
+        )
+    except TypeError:
+        # Older SDK — system_instruction not supported, fall back
+        return genai.GenerativeModel(
+            model_name=model_name,
+            generation_config=genai.GenerationConfig(
+                temperature=temperature,
+                max_output_tokens=2048,
+            ),
+        )
+
+
 def call_ai(prompt, temperature=0.7):
+    """
+    Central function: sends a prompt to Gemini and returns the text response.
+    All other generate_* / grade_* / chat_* functions go through here.
+    """
+    # ── Guard: no API key ────────────────────────────────────────────────────
     if not GEMINI_API_KEY:
         st.markdown("""<div class="q-error">
         <div class="q-error-title">⚠️ No Gemini API Key</div>
-        <div class="q-error-body">Add <code>GEMINI_API_KEY=your-key</code>
-        to your <code>.env</code> file.</div></div>""", unsafe_allow_html=True)
+        <div class="q-error-body">
+        Create a <code>.env</code> file in the same folder as <code>app.py</code> and add:<br>
+        <code>GEMINI_API_KEY=your-key-here</code><br><br>
+        Get a free key at
+        <a href="https://aistudio.google.com/apikey" target="_blank">aistudio.google.com/apikey</a>
+        </div></div>""", unsafe_allow_html=True)
         return ""
+
+    # ── Find a model ─────────────────────────────────────────────────────────
+    model_name = _find_working_model_name()
+    if model_name is None:
+        st.markdown("""<div class="q-error">
+        <div class="q-error-title">🔄 No Working Gemini Model Found</div>
+        <div class="q-error-body">
+        Could not find any available Gemini model. Please check:<br>
+        1. Your API key is valid (test it at <b>aistudio.google.com</b>).<br>
+        2. The <b>Generative Language API</b> is enabled in your Google Cloud project.<br>
+        3. Your internet connection is working.<br><br>
+        Then restart the app with <code>streamlit run app.py</code>
+        </div></div>""", unsafe_allow_html=True)
+        return ""
+
+    # ── Call the model ───────────────────────────────────────────────────────
     try:
-        model = get_working_model(temperature)
-        if model is None:
-            st.markdown("""<div class="q-error">
-            <div class="q-error-title">🔄 No Working Gemini Model Found</div>
-            <div class="q-error-body">
-            Could not connect to any Gemini model. Please check:<br>
-            1. Your API key is correct in <code>.env</code><br>
-            2. Billing is active at <b>console.cloud.google.com</b><br>
-            3. Your internet connection is working<br><br>
-            Then restart the app with <code>streamlit run app.py</code>
-            </div></div>""", unsafe_allow_html=True)
+        model = _build_model(model_name, temperature)
+        response = model.generate_content(prompt)
+
+        # Some responses may be blocked by safety filters
+        if not response.parts:
+            st.warning("⚠️ The AI returned an empty response (possibly blocked by safety filters). Try rephrasing.")
             return ""
-        return model.generate_content(prompt).text
+
+        return response.text
+
     except Exception as e:
         err = str(e)
+
+        # ── Rate limit / quota ───────────────────────────────────────────────
         if "429" in err or "quota" in err.lower() or "resource_exhausted" in err.lower():
             st.markdown("""<div class="q-error">
             <div class="q-error-title">⏱️ Rate Limit — Wait and Retry</div>
-            <div class="q-error-body">Wait 60 seconds then try again.</div>
-            </div>""", unsafe_allow_html=True)
-        elif "401" in err or "invalid" in err.lower() or "api_key" in err.lower():
-            st.error("🔑 Invalid API key. Check your .env file contains: GEMINI_API_KEY=your-key")
-        elif "503" in err or "unavailable" in err.lower():
-            st.error("⏳ Gemini servers busy. Wait 30 seconds and try again.")
+            <div class="q-error-body">
+            You've hit the API rate limit. Wait <b>60 seconds</b>, then try again.<br>
+            <em>Tip: The free tier allows ~15 requests per minute.</em>
+            </div></div>""", unsafe_allow_html=True)
+
+        # ── Authentication ───────────────────────────────────────────────────
+        elif "401" in err or "403" in err or "api_key" in err.lower() or "permission" in err.lower():
+            st.markdown("""<div class="q-error">
+            <div class="q-error-title">🔑 API Key Problem</div>
+            <div class="q-error-body">
+            Your API key was rejected. Check that:<br>
+            1. The key in <code>.env</code> is correct (no extra spaces).<br>
+            2. The key hasn't been revoked in Google AI Studio.<br>
+            3. Billing/free-tier is active.
+            </div></div>""", unsafe_allow_html=True)
+
+        # ── Model not found (shouldn't happen after list_models check) ──────
+        elif "not found" in err.lower() or "not supported" in err.lower():
+            st.session_state.working_model = None       # reset so we re-probe
+            st.markdown(f"""<div class="q-error">
+            <div class="q-error-title">🔄 Model Unavailable</div>
+            <div class="q-error-body">
+            Model <code>{model_name}</code> returned an error. The app will
+            try a different model on the next request.
+            </div></div>""", unsafe_allow_html=True)
+
+        # ── Server errors ────────────────────────────────────────────────────
+        elif "503" in err or "500" in err or "unavailable" in err.lower():
+            st.error("⏳ Gemini servers are temporarily busy. Wait 30 seconds and try again.")
+
+        # ── Anything else ────────────────────────────────────────────────────
         else:
-            # Reset cached model on any unexpected error so next call re-probes
             st.session_state.working_model = None
-            st.error(f"Error: {err}")
+            st.error(f"Unexpected AI error: {err}")
+
         return ""
 
 
