@@ -275,7 +275,7 @@ def call_ai(prompt, temperature=0.7):
     try:
         genai.configure(api_key=GEMINI_API_KEY)
         model = genai.GenerativeModel(
-            model_name="gemini-1.5-flash",
+            model_name="gemini-2.0-flash-exp",
             system_instruction=(
                 "You are an expert educational AI assistant. "
                 "Always base your responses strictly on provided course material. "
@@ -298,7 +298,7 @@ def call_ai(prompt, temperature=0.7):
             st.markdown("""<div class="q-error">
             <div class="q-error-title">🔄 Model Not Available</div>
             <div class="q-error-body">The Gemini model name is outdated.
-            Open app.py, press Ctrl+H, find <code>gemini-1.5-flash</code>
+            Open app.py, press Ctrl+H, find <code>gemini-2.0-flash-exp</code>
             and replace with <code>gemini-2.0-flash-exp</code>.</div>
             </div>""", unsafe_allow_html=True)
         elif "401" in err or "invalid" in err.lower():
