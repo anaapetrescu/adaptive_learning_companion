@@ -1811,7 +1811,7 @@ def main():
         page_title="AI Learning Companion",
         page_icon="🎓",
         layout="wide",
-        initial_sidebar_state="auto",
+        initial_sidebar_state="expanded",
     )
     inject_css()
     init_session_state()
