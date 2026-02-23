@@ -265,6 +265,65 @@ def go(page, section=None):
 # AI — GEMINI WITH ERROR HANDLING
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Models tried in order — first one that works is cached for the session
+GEMINI_MODEL_CANDIDATES = [
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-exp",
+    "gemini-1.5-flash",
+    "gemini-1.5-flash-latest",
+    "gemini-1.5-pro",
+    "gemini-pro",
+]
+
+
+def get_working_model(temperature=0.7):
+    """
+    Try Gemini model names in order and return the first one that works.
+    Caches the working model name in session_state so we only probe once.
+    """
+    if "working_model" in st.session_state and st.session_state.working_model:
+        try:
+            genai.configure(api_key=GEMINI_API_KEY)
+            m = genai.GenerativeModel(
+                model_name=st.session_state.working_model,
+                system_instruction=(
+                    "You are an expert educational AI assistant. "
+                    "Always base your responses strictly on provided course material. "
+                    "Never add external information not in the material."
+                ),
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=1400,
+                ),
+            )
+            return m
+        except Exception:
+            st.session_state.working_model = None
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    for name in GEMINI_MODEL_CANDIDATES:
+        try:
+            m = genai.GenerativeModel(
+                model_name=name,
+                system_instruction=(
+                    "You are an expert educational AI assistant. "
+                    "Always base your responses strictly on provided course material. "
+                    "Never add external information not in the material."
+                ),
+                generation_config=genai.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=1400,
+                ),
+            )
+            # Quick test call to verify the model actually works
+            m.generate_content("Say OK")
+            st.session_state.working_model = name
+            return m
+        except Exception:
+            continue
+    return None
+
+
 def call_ai(prompt, temperature=0.7):
     if not GEMINI_API_KEY:
         st.markdown("""<div class="q-error">
@@ -273,19 +332,18 @@ def call_ai(prompt, temperature=0.7):
         to your <code>.env</code> file.</div></div>""", unsafe_allow_html=True)
         return ""
     try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-exp",
-            system_instruction=(
-                "You are an expert educational AI assistant. "
-                "Always base your responses strictly on provided course material. "
-                "Never add external information not in the material."
-            ),
-            generation_config=genai.GenerationConfig(
-                temperature=temperature,
-                max_output_tokens=1400,
-            ),
-        )
+        model = get_working_model(temperature)
+        if model is None:
+            st.markdown("""<div class="q-error">
+            <div class="q-error-title">🔄 No Working Gemini Model Found</div>
+            <div class="q-error-body">
+            Could not connect to any Gemini model. Please check:<br>
+            1. Your API key is correct in <code>.env</code><br>
+            2. Billing is active at <b>console.cloud.google.com</b><br>
+            3. Your internet connection is working<br><br>
+            Then restart the app with <code>streamlit run app.py</code>
+            </div></div>""", unsafe_allow_html=True)
+            return ""
         return model.generate_content(prompt).text
     except Exception as e:
         err = str(e)
@@ -294,17 +352,14 @@ def call_ai(prompt, temperature=0.7):
             <div class="q-error-title">⏱️ Rate Limit — Wait and Retry</div>
             <div class="q-error-body">Wait 60 seconds then try again.</div>
             </div>""", unsafe_allow_html=True)
-        elif "404" in err or "not found" in err.lower():
-            st.markdown("""<div class="q-error">
-            <div class="q-error-title">🔄 Model Not Available</div>
-            <div class="q-error-body">The Gemini model name is outdated.
-            Open app.py, press Ctrl+H, find <code>gemini-2.0-flash-exp</code>
-            and replace with <code>gemini-2.5-pro-exp-03-25</code>.</div>
-            </div>""", unsafe_allow_html=True)
-        elif "401" in err or "invalid" in err.lower():
-            st.error("🔑 Invalid API key. Check your .env file.")
+        elif "401" in err or "invalid" in err.lower() or "api_key" in err.lower():
+            st.error("🔑 Invalid API key. Check your .env file contains: GEMINI_API_KEY=your-key")
+        elif "503" in err or "unavailable" in err.lower():
+            st.error("⏳ Gemini servers busy. Wait 30 seconds and try again.")
         else:
-            st.error(f"Unexpected error: {err}")
+            # Reset cached model on any unexpected error so next call re-probes
+            st.session_state.working_model = None
+            st.error(f"Error: {err}")
         return ""
 
 
