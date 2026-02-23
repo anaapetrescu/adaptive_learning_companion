@@ -33,7 +33,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 def inject_css():
     st.markdown("""
 <style>
-#MainMenu{visibility:hidden;}footer{visibility:hidden;}header{visibility:hidden;}
+#MainMenu{visibility:hidden;}
+footer{visibility:hidden;}
+[data-testid="stDecoration"]{display:none;}
+[data-testid="stHeader"]{background:transparent;backdrop-filter:none;}
 .block-container{padding-top:1.5rem;padding-bottom:2rem;}
 .stApp{background:#F0F4F8;}
 
