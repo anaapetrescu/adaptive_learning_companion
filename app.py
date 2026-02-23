@@ -299,7 +299,7 @@ def call_ai(prompt, temperature=0.7):
             <div class="q-error-title">🔄 Model Not Available</div>
             <div class="q-error-body">The Gemini model name is outdated.
             Open app.py, press Ctrl+H, find <code>gemini-2.0-flash-exp</code>
-            and replace with <code>gemini-2.0-flash-exp</code>.</div>
+            and replace with <code>gemini-2.5-pro-exp-03-25</code>.</div>
             </div>""", unsafe_allow_html=True)
         elif "401" in err or "invalid" in err.lower():
             st.error("🔑 Invalid API key. Check your .env file.")
