@@ -243,7 +243,7 @@ def call_ai(prompt, temperature=0.7):
     - Free tier: 1,500 requests/day, 1M tokens/minute — ideal for a student prototype
     - No billing required for development and testing
     - Comparable output quality to GPT-4o-mini for educational tasks
-    - Model used: gemini-2.0-flash-lite (fast, efficient, free)
+    - Model used: gemini-2.0-flash (fast, efficient, free)
 
     Error handling covers: missing key, quota exceeded, safety blocks,
     network issues, and unexpected errors — each with a clear user message.
@@ -266,7 +266,7 @@ def call_ai(prompt, temperature=0.7):
         genai.configure(api_key=GEMINI_API_KEY)
 
         model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash-lite",
+            model_name="gemini-2.0-flash",
             system_instruction=(
                 "You are an expert educational AI assistant. "
                 "Always base your responses strictly on the provided course material. "
